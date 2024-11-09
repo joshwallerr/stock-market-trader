@@ -147,6 +147,9 @@ def check_for_trades(tickers, decrease_threshold, gap_up_threshold, short_window
                     gap_percentage = (today_open - yesterday_close) / yesterday_close * 100
 
                     if gap_percentage >= gap_up_threshold:
+                        print(f"Gap up detected for {ticker}: {gap_percentage:.2f}%")
+                        print(f"Today's open: {today_open}, Yesterday's close: {yesterday_close}")
+
                         # Buy logic here
                         buy_price = today_open
                         buy_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -241,6 +244,9 @@ def check_for_trades(tickers, decrease_threshold, gap_up_threshold, short_window
                 target_price = float(buy_price) * (1 + target_profit / 100)
 
                 if current_price >= target_price:
+                    print(f"Selling {ticker} at ${current_price:.2f} with target profit {target_profit:.2f}%")
+                    print(f"Buy price: ${buy_price:.2f}, Target price: ${target_price:.2f}")
+
                     sell_price = current_price
                     sell_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     return_pct = (sell_price - buy_price) / buy_price * 100
