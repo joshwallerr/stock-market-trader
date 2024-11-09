@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trade History</title>
+</head>
+<body>
+    <h1>Trade History</h1>
+    <table style="border: 1px solid lightgray;">
+        <tr>
+            <th>ID</th>
+            <th>Ticker</th>
+            <th>Buy Price</th>
+            <th>Sell Price</th>
+            <th>Buy Date</th>
+            <th>Sell Date</th>
+            <th>Status</th>
+            <th>Investment</th>
+            <th>Return %</th>
+            <th>Buy Rule</th>
+            <th>Target Profit</th>
+        </tr>
+        {% for trade in trades %}
+        <tr>
+            <td>{{ trade['id'] }}</td>
+            <td>{{ trade['ticker'] }}</td>
+            <td>{{ trade['buy_price'] }}</td>
+            <td>{{ trade['sell_price'] }}</td>
+            <td>{{ trade['buy_date'] }}</td>
+            <td>{{ trade['sell_date'] }}</td>
+            <td>{{ trade['status'] }}</td>
+            <td>{{ trade['investment'] }}</td>
+            <td>{{ trade['return_pct'] }}</td>
+            <td>{{ trade['buy_rule'] }}</td>
+            <td>{{ trade['target_profit'] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <a href="{{ url_for('index') }}">Back to Home</a>
+</body>
+</html>

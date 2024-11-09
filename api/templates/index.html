@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Bot Dashboard</title>
+    <style>
+        /* Simple styling for the dashboard */
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        .metrics { margin-bottom: 20px; }
+        .metrics div { margin: 5px 0; }
+        .buttons { margin-bottom: 20px; }
+        .buttons form { display: inline-block; margin-right: 10px; }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Trading Bot Dashboard</h1>
+    
+    <div class="metrics">
+        <h2>Performance Metrics</h2>
+        <div>Daily Return: {{ daily_return | round(2) }}%</div>
+        <div>Weekly Return: {{ weekly_return | round(2) }}%</div>
+        <div>Monthly Return: {{ monthly_return | round(2) }}%</div>
+        <div>Total Profit: ${{ total_profit | round(2) }}</div>
+        <div>Total Return Percentage: {{ total_return_pct | round(2) }}%</div>
+        <div>Total Trades: {{ total_trades }}</div>
+        <div>Winning Trades: {{ winning_trades }}</div>
+        <div>Losing Trades: {{ losing_trades }}</div>
+        <div>Win Rate: {{ win_rate | round(2) }}%</div>    
+    </div>
+    
+    <h2>Trading Parameters</h2>
+    <form action="/start_trading" method="post">
+        <label for="decrease_threshold">Decrease Threshold (%):</label>
+        <input type="number" step="0.1" name="decrease_threshold" value="{{ trading_parameters['decrease_threshold'] }}" required><br><br>
+        <button type="submit">Start Trading</button>
+    </form>
+    <form action="/stop_trading" method="post">
+        <button type="submit">Stop Trading</button>
+    </form>
+    
+    <a href="{{ url_for('trades') }}">View Trade History</a>
+
+
+
+
+
+    <canvas id="profitChart" width="400" height="200"></canvas>
+
+    <script>
+        var ctx = document.getElementById('profitChart').getContext('2d');
+        var chartLabels = {{ chart_labels | safe }};
+        var chartData = {{ chart_data | safe }};
+
+        var profitChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: chartLabels,
+                datasets: [{
+                    label: 'Cumulative Profit',
+                    data: chartData,
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    fill: false,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    x: { 
+                        display: true,
+                        title: { display: true, text: 'Date' }
+                    },
+                    y: {
+                        display: true,
+                        title: { display: true, text: 'Profit ($)' }
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
