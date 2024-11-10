@@ -5,3 +5,4 @@ yfinance
 pytz
 requests
 pandas
+python-dotenv
