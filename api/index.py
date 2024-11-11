@@ -13,9 +13,6 @@ from functools import lru_cache
 load_dotenv()
 
 PASSWORD = os.getenv('PASSWORD')
-print(PASSWORD)
-
-
 
 
 # Initialize Flask app
