@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -38,6 +38,125 @@ class TriggeredBuy(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     symbol = db.Column(db.String(10), unique=True, nullable=False)
     trigger_date = db.Column(db.DateTime, nullable=False)
+
+class Trade(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    symbol = db.Column(db.String(10), nullable=False)
+    action = db.Column(db.String(4), nullable=False)  # 'BUY' or 'SELL'
+    price = db.Column(db.Float, nullable=False)
+    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
+
+
+
+
+
+
+
+
+
+
+@app.route('/dashboard')
+def dashboard():
+    # Fetch trade history
+    trades = Trade.query.order_by(Trade.timestamp.desc()).all()
+
+    # Fetch open positions
+    open_positions = Position.query.filter_by(is_open=True).all()
+
+    # Calculate average rates of return
+    avg_returns = calculate_average_returns()
+
+    return render_template('dashboard.html', trades=trades, open_positions=open_positions, avg_returns=avg_returns)
+
+
+def calculate_average_returns():
+    avg_returns = {}
+    now = datetime.utcnow()
+
+    periods = {
+        'daily': now - timedelta(days=1),
+        'weekly': now - timedelta(weeks=1),
+        'monthly': now - timedelta(days=30),
+        'yearly': now - timedelta(days=365)
+    }
+
+    for period_name, start_date in periods.items():
+        trades = Trade.query.filter(Trade.timestamp >= start_date).all()
+        buy_prices = {}
+        returns = []
+
+        for trade in trades:
+            if trade.action == 'BUY':
+                buy_prices[trade.symbol] = trade.price
+            elif trade.action == 'SELL' and trade.symbol in buy_prices:
+                buy_price = buy_prices.pop(trade.symbol)
+                sell_price = trade.price
+                ret = ((sell_price - buy_price) / buy_price) * 100
+                returns.append(ret)
+
+        if returns:
+            avg = sum(returns) / len(returns)
+        else:
+            avg = 0.0
+
+        avg_returns[period_name] = round(avg, 2)
+
+    return avg_returns
+
+
+
+
+@app.route('/api/trades')
+def api_trades():
+    trades = Trade.query.order_by(Trade.timestamp.asc()).all()
+    trade_data = {
+        'trades': [],
+        'timestamps': [],
+        'buyVolumes': [],
+        'sellVolumes': [],
+        'profitLoss': []
+    }
+
+    profit = 0.0
+    # Initialize a dictionary to track open buys
+    open_buys = {}
+
+    for trade in trades:
+        trade_data['trades'].append({
+            'action': trade.action,
+            'symbol': trade.symbol,
+            'price': trade.price,
+            'timestamp': trade.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        })
+
+        # Aggregate buy and sell volumes over time (e.g., per day)
+        timestamp = trade.timestamp.strftime('%Y-%m-%d')
+        if timestamp not in trade_data['timestamps']:
+            trade_data['timestamps'].append(timestamp)
+            trade_data['buyVolumes'].append(0)
+            trade_data['sellVolumes'].append(0)
+            trade_data['profitLoss'].append(profit)
+
+        index = trade_data['timestamps'].index(timestamp)
+
+        if trade.action == 'BUY':
+            trade_data['buyVolumes'][index] += 1
+            open_buys[trade.symbol] = trade.price
+        elif trade.action == 'SELL' and trade.symbol in open_buys:
+            buy_price = open_buys.pop(trade.symbol)
+            profit += (trade.price - buy_price)
+            trade_data['sellVolumes'][index] += 1
+
+        trade_data['profitLoss'][index] = profit
+
+    return jsonify(trade_data)
+
+
+
+
+
 
 # Create database tables
 with app.app_context():
@@ -153,6 +272,16 @@ def run_trading_logic():
                 buy_date=datetime.utcnow()
             )
             db.session.add(new_position)
+
+            # Log the buy trade
+            buy_trade = Trade(
+                symbol=symbol,
+                action='BUY',
+                price=buy_price,
+                timestamp=datetime.utcnow()
+            )
+            db.session.add(buy_trade)
+
             db.session.commit()
             logger.info(f"Bought {symbol} at {buy_price:.2f}, target {target_price:.2f}")
 
@@ -169,12 +298,21 @@ def run_trading_logic():
             db.session.commit()
             logger.info(f"Sold {position.symbol} at {data['current_price']:.2f}")
 
+            # Log the sell trade
+            sell_trade = Trade(
+                symbol=position.symbol,
+                action='SELL',
+                price=data['current_price'],
+                timestamp=datetime.utcnow()
+            )
+            db.session.add(sell_trade)
+            db.session.commit()
+
             # Remove from triggered buys
             triggered_buy = TriggeredBuy.query.filter_by(symbol=position.symbol).first()
             if triggered_buy:
                 db.session.delete(triggered_buy)
                 db.session.commit()
-
 
 
 

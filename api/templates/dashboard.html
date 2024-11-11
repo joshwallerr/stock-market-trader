@@ -1,0 +1,205 @@
+<!-- templates/dashboard.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Trading Bot Dashboard</title>
+    <!-- Bootstrap CSS for styling -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+    <!-- Chart.js for graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            padding-top: 20px;
+        }
+        .status {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="mb-4">Trading Bot Dashboard</h1>
+
+    <!-- Trade History -->
+    <div class="mb-4">
+        <h3>Trade History</h3>
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Action</th>
+                    <th>Symbol</th>
+                    <th>Price ($)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for trade in trades %}
+                <tr>
+                    <td>{{ trade.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ trade.action }}</td>
+                    <td>{{ trade.symbol }}</td>
+                    <td>{{ '%.2f'|format(trade.price) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Open Positions -->
+    <div class="mb-4">
+        <h3>Open Positions</h3>
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Buy Price ($)</th>
+                    <th>Target Price ($)</th>
+                    <th>Buy Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for position in open_positions %}
+                <tr>
+                    <td>{{ position.symbol }}</td>
+                    <td>{{ '%.2f'|format(position.buy_price) }}</td>
+                    <td>{{ '%.2f'|format(position.target_price) }}</td>
+                    <td>{{ position.buy_date.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Average Rates of Return -->
+    <div class="mb-4">
+        <h3>Average Rates of Return</h3>
+        <ul>
+            <li>Daily: {{ avg_returns.daily }}%</li>
+            <li>Weekly: {{ avg_returns.weekly }}%</li>
+            <li>Monthly: {{ avg_returns.monthly }}%</li>
+            <li>Yearly: {{ avg_returns.yearly }}%</li>
+        </ul>
+    </div>
+
+    <!-- Graphs -->
+    <div class="mb-4">
+        <h3>Trade Volume Over Time</h3>
+        <canvas id="tradeVolumeChart" width="400" height="200"></canvas>
+    </div>
+
+    <div class="mb-4">
+        <h3>Profit/Loss Over Time</h3>
+        <canvas id="profitLossChart" width="400" height="200"></canvas>
+    </div>
+</div>
+
+<!-- jQuery and Bootstrap JS -->
+<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js"></script>
+<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js"></script>
+
+<!-- Chart.js Scripts -->
+<script>
+    // Fetch trade data for charts
+    fetch('/api/trades')
+        .then(response => response.json())
+        .then(data => {
+            // Prepare data for Trade Volume Over Time
+            const tradeVolumeData = {
+                labels: data.timestamps,
+                datasets: [
+                    {
+                        label: 'BUY',
+                        backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        data: data.buyVolumes,
+                        fill: false,
+                    },
+                    {
+                        label: 'SELL',
+                        backgroundColor: 'rgba(255, 99, 132, 0.6)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        data: data.sellVolumes,
+                        fill: false,
+                    }
+                ]
+            };
+
+            const ctx1 = document.getElementById('tradeVolumeChart').getContext('2d');
+            new Chart(ctx1, {
+                type: 'line',
+                data: tradeVolumeData,
+                options: {
+                    responsive: true,
+                    title: {
+                        display: true,
+                        text: 'Trade Volume Over Time'
+                    },
+                    scales: {
+                        xAxes: [{
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                displayFormats: {
+                                    day: 'MMM D'
+                                }
+                            }
+                        }],
+                        yAxes: [{
+                            ticks: {
+                                beginAtZero: true,
+                                precision:0
+                            }
+                        }]
+                    }
+                }
+            });
+
+            // Prepare data for Profit/Loss Over Time
+            const profitLossData = {
+                labels: data.timestamps,
+                datasets: [
+                    {
+                        label: 'Profit/Loss ($)',
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        data: data.profitLoss,
+                        fill: false,
+                    }
+                ]
+            };
+
+            const ctx2 = document.getElementById('profitLossChart').getContext('2d');
+            new Chart(ctx2, {
+                type: 'line',
+                data: profitLossData,
+                options: {
+                    responsive: true,
+                    title: {
+                        display: true,
+                        text: 'Profit/Loss Over Time'
+                    },
+                    scales: {
+                        xAxes: [{
+                            type: 'time',
+                            time: {
+                                unit: 'day',
+                                displayFormats: {
+                                    day: 'MMM D'
+                                }
+                            }
+                        }],
+                        yAxes: [{
+                            ticks: {
+                                beginAtZero: true
+                            }
+                        }]
+                    }
+                }
+            });
+        });
+</script>
+</body>
+</html>
