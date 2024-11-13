@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template
-from flask_sqlalchemy import SQLAlchemy
+from flask_mongoengine import MongoEngine
 import yfinance as yf
 from datetime import datetime, timedelta
 import pytz
@@ -10,107 +10,84 @@ from dotenv import load_dotenv
 import os
 from functools import lru_cache
 
+# Load environment variables
 load_dotenv()
 
 PASSWORD = os.getenv('PASSWORD')
 
-
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///trading_bot.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+
+# Configure MongoDB
+app.config['MONGODB_SETTINGS'] = {
+    'db': 'OKh5hxnPlLbMm2Yb',  # Database name
+    'host': os.getenv('MONGODB_URI')  # MongoDB connection string
+}
+
+# Initialize MongoEngine
+db = MongoEngine(app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database models
-class Position(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    symbol = db.Column(db.String(10), nullable=False)
-    buy_price = db.Column(db.Float, nullable=False)
-    target_price = db.Column(db.Float, nullable=False)
-    buy_date = db.Column(db.DateTime, nullable=False)
-    is_open = db.Column(db.Boolean, default=True)
+# Database models using MongoEngine
+class Position(db.Document):
+    symbol = db.StringField(required=True, max_length=10)
+    buy_price = db.FloatField(required=True)
+    target_price = db.FloatField(required=True)
+    buy_date = db.DateTimeField(required=True)
+    is_open = db.BooleanField(default=True)
 
-class TriggeredBuy(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    symbol = db.Column(db.String(10), unique=True, nullable=False)
-    trigger_date = db.Column(db.DateTime, nullable=False)
+    meta = {
+        'collection': 'positions'
+    }
 
-class Trade(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    symbol = db.Column(db.String(10), nullable=False)
-    action = db.Column(db.String(4), nullable=False)  # 'BUY' or 'SELL'
-    price = db.Column(db.Float, nullable=False)
-    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+class TriggeredBuy(db.Document):
+    symbol = db.StringField(required=True, unique=True, max_length=10)
+    trigger_date = db.DateTimeField(required=True)
 
+    meta = {
+        'collection': 'triggered_buys',
+        'indexes': [
+            {'fields': ['symbol'], 'unique': True}
+        ]
+    }
 
+class Trade(db.Document):
+    symbol = db.StringField(required=True, max_length=10)
+    action = db.StringField(required=True, choices=['BUY', 'SELL'])
+    price = db.FloatField(required=True)
+    timestamp = db.DateTimeField(required=True, default=datetime.utcnow)
 
+    meta = {
+        'collection': 'trades'
+    }
 
+# Create database tables (collections)
+with app.app_context():
+    db.create_collection(Position)
+    db.create_collection(TriggeredBuy)
+    db.create_collection(Trade)
 
-
-
-
-
-
-
-
+# Dashboard route
 @app.route('/dashboard')
 def dashboard():
     # Fetch trade history
-    trades = Trade.query.order_by(Trade.timestamp.desc()).all()
+    trades = Trade.objects.order_by('-timestamp')
 
     # Fetch open positions
-    open_positions = Position.query.filter_by(is_open=True).all()
+    open_positions = Position.objects(is_open=True)
 
     # Calculate average rates of return
     avg_returns = calculate_average_returns()
 
     return render_template('dashboard.html', trades=trades, open_positions=open_positions, avg_returns=avg_returns)
 
-
-def calculate_average_returns():
-    avg_returns = {}
-    now = datetime.utcnow()
-
-    periods = {
-        'daily': now - timedelta(days=1),
-        'weekly': now - timedelta(weeks=1),
-        'monthly': now - timedelta(days=30),
-        'yearly': now - timedelta(days=365)
-    }
-
-    for period_name, start_date in periods.items():
-        trades = Trade.query.filter(Trade.timestamp >= start_date).all()
-        buy_prices = {}
-        returns = []
-
-        for trade in trades:
-            if trade.action == 'BUY':
-                buy_prices[trade.symbol] = trade.price
-            elif trade.action == 'SELL' and trade.symbol in buy_prices:
-                buy_price = buy_prices.pop(trade.symbol)
-                sell_price = trade.price
-                ret = ((sell_price - buy_price) / buy_price) * 100
-                returns.append(ret)
-
-        if returns:
-            avg = sum(returns) / len(returns)
-        else:
-            avg = 0.0
-
-        avg_returns[period_name] = round(avg, 2)
-
-    return avg_returns
-
-
-
-
+# API endpoint for trade data
 @app.route('/api/trades')
 def api_trades():
-    trades = Trade.query.order_by(Trade.timestamp.asc()).all()
+    trades = Trade.objects.order_by('timestamp')
     trade_data = {
         'trades': [],
         'timestamps': [],
@@ -153,15 +130,7 @@ def api_trades():
 
     return jsonify(trade_data)
 
-
-
-
-
-
-# Create database tables
-with app.app_context():
-    db.create_all()
-
+# Endpoint to run trades
 @app.route('/run-trades', methods=['POST'])
 def run_trades():
     data = request.get_json()
@@ -177,9 +146,6 @@ def run_trades():
         logger.error(f"Error executing trading logic: {e}")
         return jsonify({'error': str(e)}), 500
 
-
-
-
 def fetch_multiple_stock_data(symbols):
     try:
         tz = pytz.timezone('US/Eastern')
@@ -192,7 +158,8 @@ def fetch_multiple_stock_data(symbols):
 
         stock_data = {}
         for symbol in symbols:
-            if symbol not in stocks:
+            # Check if the symbol exists in the fetched data
+            if symbol not in stocks.columns.levels[0]:
                 logger.warning(f"No data for {symbol}")
                 continue
             hist = stocks[symbol]
@@ -212,15 +179,10 @@ def fetch_multiple_stock_data(symbols):
         logger.error(f"Error fetching multiple stock data: {e}")
         return {}
 
-
-
-
-
-
 def is_market_open():
     """
     Checks if the US stock market is currently open.
-    
+
     Returns:
         bool: True if market is open, else False.
     """
@@ -229,9 +191,8 @@ def is_market_open():
     # US stock markets are typically open from 9:30 AM to 4:00 PM EST
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    
-    return market_open <= now <= market_close
 
+    return market_open <= now <= market_close
 
 @lru_cache(maxsize=1)
 def get_sp500_symbols_cached():
@@ -252,15 +213,18 @@ def run_trading_logic():
 
     # Check for new buy opportunities
     for symbol in sp500_symbols:
-        if (TriggeredBuy.query.filter_by(symbol=symbol).first() or
-            Position.query.filter_by(symbol=symbol, is_open=True).first()):
+        if (TriggeredBuy.objects(symbol=symbol).first() or
+            Position.objects(symbol=symbol, is_open=True).first()):
             continue
 
         data = stock_data.get(symbol)
         if data and check_buy_condition(data):
             # Record triggered buy condition
-            new_trigger = TriggeredBuy(symbol=symbol, trigger_date=datetime.utcnow())
-            db.session.add(new_trigger)
+            new_trigger = TriggeredBuy(
+                symbol=symbol,
+                trigger_date=datetime.utcnow()
+            )
+            new_trigger.save()
 
             # Open a new position
             buy_price = data['current_price']
@@ -271,7 +235,7 @@ def run_trading_logic():
                 target_price=target_price,
                 buy_date=datetime.utcnow()
             )
-            db.session.add(new_position)
+            new_position.save()
 
             # Log the buy trade
             buy_trade = Trade(
@@ -280,13 +244,12 @@ def run_trading_logic():
                 price=buy_price,
                 timestamp=datetime.utcnow()
             )
-            db.session.add(buy_trade)
+            buy_trade.save()
 
-            db.session.commit()
             logger.info(f"Bought {symbol} at {buy_price:.2f}, target {target_price:.2f}")
 
     # Check for sell opportunities
-    open_positions = Position.query.filter_by(is_open=True).all()
+    open_positions = Position.objects(is_open=True)
     symbols_to_fetch = [position.symbol for position in open_positions]
     sell_data = fetch_multiple_stock_data(symbols_to_fetch)
 
@@ -294,8 +257,7 @@ def run_trading_logic():
         data = sell_data.get(position.symbol)
         if data and data['current_price'] >= position.target_price:
             # Close the position
-            position.is_open = False
-            db.session.commit()
+            position.update(set__is_open=False)
             logger.info(f"Sold {position.symbol} at {data['current_price']:.2f}")
 
             # Log the sell trade
@@ -305,24 +267,19 @@ def run_trading_logic():
                 price=data['current_price'],
                 timestamp=datetime.utcnow()
             )
-            db.session.add(sell_trade)
-            db.session.commit()
+            sell_trade.save()
 
             # Remove from triggered buys
-            triggered_buy = TriggeredBuy.query.filter_by(symbol=position.symbol).first()
-            if triggered_buy:
-                db.session.delete(triggered_buy)
-                db.session.commit()
-
-
+            TriggeredBuy.objects(symbol=position.symbol).delete()
+            logger.info(f"Removed TriggeredBuy for {position.symbol}")
 
 def check_buy_condition(data):
     """
     Checks if the stock has decreased by more than 10% from opening to intraday low.
-    
+
     Args:
         data (dict): Dictionary containing 'opening_price' and 'intraday_low'.
-        
+
     Returns:
         bool: True if condition met, else False.
     """
@@ -336,34 +293,68 @@ def check_buy_condition(data):
 def get_sp500_symbols():
     """
     Fetches the current list of S&P 500 symbols from Wikipedia.
-    
+
     Returns:
         list: A list of ticker symbols.
     """
     try:
         # URL of the Wikipedia page containing S&P 500 companies
         wiki_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        
+
         # Use pandas to read all tables from the Wikipedia page
         response = requests.get(wiki_url)
         response.raise_for_status()  # Raise an error for bad status codes
-        
+
         tables = pd.read_html(response.text)
-        
+
         # The first table usually contains the list of S&P 500 companies
         sp500_table = tables[0]
-        
+
         # Extract the ticker symbols
         symbols = sp500_table['Symbol'].tolist()
-        
+
         # Clean symbols (some have dots which yfinance expects as dashes)
         symbols = [symbol.replace('.', '-') for symbol in symbols]
-        
+
         logger.info(f"Fetched {len(symbols)} S&P 500 symbols.")
         return symbols
     except Exception as e:
         logger.error(f"Error fetching S&P 500 symbols: {e}")
         return []
+
+def calculate_average_returns():
+    avg_returns = {}
+    now = datetime.utcnow()
+
+    periods = {
+        'daily': now - timedelta(days=1),
+        'weekly': now - timedelta(weeks=1),
+        'monthly': now - timedelta(days=30),
+        'yearly': now - timedelta(days=365)
+    }
+
+    for period_name, start_date in periods.items():
+        trades = Trade.objects(timestamp__gte=start_date)
+        buy_prices = {}
+        returns = []
+
+        for trade in trades:
+            if trade.action == 'BUY':
+                buy_prices[trade.symbol] = trade.price
+            elif trade.action == 'SELL' and trade.symbol in buy_prices:
+                buy_price = buy_prices.pop(trade.symbol)
+                sell_price = trade.price
+                ret = ((sell_price - buy_price) / buy_price) * 100
+                returns.append(ret)
+
+        if returns:
+            avg = sum(returns) / len(returns)
+        else:
+            avg = 0.0
+
+        avg_returns[period_name] = round(avg, 2)
+
+    return avg_returns
 
 if __name__ == '__main__':
     app.run(debug=True)
