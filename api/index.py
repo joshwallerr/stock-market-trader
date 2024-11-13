@@ -1,14 +1,17 @@
 from flask import Flask, request, jsonify, render_template
 from pymongo import MongoClient, DESCENDING
+import yfinance as yf
 from datetime import datetime, timedelta
 import pytz
-import yfinance as yf
 import pandas as pd
 import requests
 import logging
 from dotenv import load_dotenv
 import os
 from functools import lru_cache
+from io import StringIO
+
+
 
 # Load environment variables
 load_dotenv()
@@ -51,7 +54,6 @@ def dashboard():
     avg_returns = calculate_average_returns()
 
     return render_template('dashboard.html', trades=trades, open_positions=open_positions, avg_returns=avg_returns)
-
 
 @app.route('/api/trades')
 def api_trades():
@@ -113,9 +115,12 @@ def run_trades():
     except Exception as e:
         logger.error(f"Error executing trading logic: {e}")
         return jsonify({'error': str(e)}), 500
-
-
+    
 def fetch_multiple_stock_data(symbols):
+    if not symbols:
+        logger.warning("No symbols provided to fetch_multiple_stock_data.")
+        return {}
+    
     try:
         tz = pytz.timezone('US/Eastern')
         now = datetime.now(tz)
@@ -135,8 +140,9 @@ def fetch_multiple_stock_data(symbols):
             if hist.empty:
                 logger.warning(f"No data for {symbol}")
                 continue
-            current_price = hist['Close'][-1]
-            opening_price = hist['Open'][0]
+            # Use .iloc for positional indexing
+            current_price = hist['Close'].iloc[-1]
+            opening_price = hist['Open'].iloc[0]
             intraday_low = hist['Low'].min()
             stock_data[symbol] = {
                 'current_price': current_price,
@@ -147,7 +153,6 @@ def fetch_multiple_stock_data(symbols):
     except Exception as e:
         logger.error(f"Error fetching multiple stock data: {e}")
         return {}
-
 
 def is_market_open():
     """
@@ -164,11 +169,9 @@ def is_market_open():
 
     return market_open <= now <= market_close
 
-
 @lru_cache(maxsize=1)
 def get_sp500_symbols_cached():
     return get_sp500_symbols()
-
 
 def run_trading_logic():
     if not is_market_open():
@@ -237,7 +240,12 @@ def run_trading_logic():
     # Check for sell opportunities
     open_positions = list(positions_col.find({'is_open': True}))
     symbols_to_fetch = [position['symbol'] for position in open_positions]
-    sell_data = fetch_multiple_stock_data(symbols_to_fetch)
+
+    if symbols_to_fetch:
+        sell_data = fetch_multiple_stock_data(symbols_to_fetch)
+    else:
+        sell_data = {}
+        logger.info("No open positions to check for sell opportunities.")
 
     for position in open_positions:
         symbol = position['symbol']
@@ -295,7 +303,7 @@ def check_buy_condition(data):
 def get_sp500_symbols():
     """
     Fetches the current list of S&P 500 symbols from Wikipedia.
-
+    
     Returns:
         list: A list of ticker symbols.
     """
@@ -307,7 +315,7 @@ def get_sp500_symbols():
         response = requests.get(wiki_url)
         response.raise_for_status()  # Raise an error for bad status codes
 
-        tables = pd.read_html(response.text)
+        tables = pd.read_html(StringIO(response.text))
 
         # The first table usually contains the list of S&P 500 companies
         sp500_table = tables[0]
@@ -336,16 +344,18 @@ def calculate_average_returns():
     }
 
     for period_name, start_date in periods.items():
-        trades = Trade.objects(timestamp__gte=start_date)
+        # Fetch trades within the period
+        trades = list(trades_col.find({'timestamp': {'$gte': start_date}}).sort('timestamp', 1))
+
         buy_prices = {}
         returns = []
 
         for trade in trades:
-            if trade.action == 'BUY':
-                buy_prices[trade.symbol] = trade.price
-            elif trade.action == 'SELL' and trade.symbol in buy_prices:
-                buy_price = buy_prices.pop(trade.symbol)
-                sell_price = trade.price
+            if trade['action'] == 'BUY':
+                buy_prices[trade['symbol']] = trade['price']
+            elif trade['action'] == 'SELL' and trade['symbol'] in buy_prices:
+                buy_price = buy_prices.pop(trade['symbol'])
+                sell_price = trade['price']
                 ret = ((sell_price - buy_price) / buy_price) * 100
                 returns.append(ret)
 

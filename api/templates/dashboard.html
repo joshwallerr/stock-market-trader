@@ -25,6 +25,7 @@
     <!-- Trade History -->
     <div class="mb-4">
         <h3>Trade History</h3>
+        {% if trades %}
         <table class="table table-striped">
             <thead>
                 <tr>
@@ -45,11 +46,15 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% else %}
+        <p>No trades executed yet.</p>
+        {% endif %}
     </div>
 
     <!-- Open Positions -->
     <div class="mb-4">
         <h3>Open Positions</h3>
+        {% if open_positions %}
         <table class="table table-striped">
             <thead>
                 <tr>
@@ -70,6 +75,9 @@
                 {% endfor %}
             </tbody>
         </table>
+        {% else %}
+        <p>No open positions.</p>
+        {% endif %}
     </div>
 
     <!-- Average Rates of Return -->

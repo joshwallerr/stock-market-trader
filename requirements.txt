@@ -5,4 +5,4 @@ pytz
 requests
 pandas
 python-dotenv
-flask-mongoengine
+pymongo
