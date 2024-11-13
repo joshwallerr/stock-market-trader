@@ -1,5 +1,5 @@
 Flask==3.0.3
-urllib3==1.26.16
+urllib3==1.26.19
 yfinance
 pytz
 requests
