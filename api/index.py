@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import os
 from functools import lru_cache
 from io import StringIO
-
+import time
 
 
 # Load environment variables
@@ -166,7 +166,13 @@ def fetch_multiple_stock_data(symbols):
         return stock_data
     except Exception as e:
         logger.error(f"Error fetching multiple stock data: {e}")
-        return {}
+        if retries > 0:
+            logger.info(f"Retrying in {delay} seconds... ({retries} retries left)")
+            time.sleep(delay)
+            return fetch_multiple_stock_data(symbols, retries - 1, delay)
+        else:
+            logger.error("Max retries exceeded. Skipping data fetch.")
+            return {}
 
 def is_market_open():
     """
@@ -249,7 +255,10 @@ def run_trading_logic():
                 'timestamp': datetime.utcnow()
             }
             try:
-                trades_col.insert_one(buy_trade)
+                if validate_trade_data(buy_trade):
+                    trades_col.insert_one(buy_trade)
+                else:
+                    logger.warning(f"Invalid trade data: {buy_trade}")
             except Exception as e:
                 logger.error(f"Error logging BUY trade for {symbol}: {e}")
                 continue
@@ -290,7 +299,10 @@ def run_trading_logic():
                 'timestamp': datetime.utcnow()
             }
             try:
-                trades_col.insert_one(sell_trade)
+                if validate_trade_data(sell_trade):
+                    trades_col.insert_one(sell_trade)
+                else:
+                    logger.warning(f"Invalid trade data: {sell_trade}")
             except Exception as e:
                 logger.error(f"Error logging SELL trade for {symbol}: {e}")
                 continue
@@ -301,6 +313,13 @@ def run_trading_logic():
             except Exception as e:
                 logger.error(f"Error deleting TriggeredBuy for {symbol}: {e}")
                 continue
+
+def validate_trade_data(trade):
+    required_fields = ['symbol', 'action', 'price', 'timestamp']
+    for field in required_fields:
+        if field not in trade or pd.isna(trade[field]):
+            return False
+    return True
 
 def check_buy_condition(data):
     """
