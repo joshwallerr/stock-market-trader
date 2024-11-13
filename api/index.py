@@ -128,7 +128,15 @@ def fetch_multiple_stock_data(symbols):
         end_date = now
 
         # Fetch data for all symbols at once
-        stocks = yf.download(tickers=' '.join(symbols), interval='1m', start=start_date, end=end_date, group_by='ticker')
+        stocks = yf.download(
+            tickers=' '.join(symbols), 
+            interval='1m', 
+            start=start_date, 
+            end=end_date, 
+            group_by='ticker',
+            threads=True,  # Enable multi-threading for faster downloads
+            progress=False  # Disable progress bar for cleaner logs
+        )
 
         stock_data = {}
         for symbol in symbols:
@@ -140,10 +148,16 @@ def fetch_multiple_stock_data(symbols):
             if hist.empty:
                 logger.warning(f"No data for {symbol}")
                 continue
-            # Use .iloc for positional indexing
+            # Use .iloc for positional indexing to avoid FutureWarning
             current_price = hist['Close'].iloc[-1]
             opening_price = hist['Open'].iloc[0]
             intraday_low = hist['Low'].min()
+            
+            # Check for nan values
+            if pd.isna(current_price) or pd.isna(opening_price) or pd.isna(intraday_low):
+                logger.warning(f"Incomplete data for {symbol}. Data: Current Price={current_price}, Opening Price={opening_price}, Intraday Low={intraday_low}")
+                continue
+
             stock_data[symbol] = {
                 'current_price': current_price,
                 'opening_price': opening_price,
@@ -209,6 +223,11 @@ def run_trading_logic():
             # Open a new position
             buy_price = data['current_price']
             target_price = buy_price * 1.005  # Target 0.5% increase
+
+            if pd.isna(buy_price) or pd.isna(target_price):
+                logger.warning(f"Invalid buy_price or target_price for {symbol}. Skipping trade.")
+                continue
+
             new_position = {
                 'symbol': symbol,
                 'buy_price': buy_price,
@@ -285,17 +304,22 @@ def run_trading_logic():
 
 def check_buy_condition(data):
     """
-    Checks if the stock has decreased by more than 10% from opening to intraday low.
-
+    Checks if the stock has decreased by more than 5% from opening to intraday low.
+    
     Args:
         data (dict): Dictionary containing 'opening_price' and 'intraday_low'.
-
+    
     Returns:
         bool: True if condition met, else False.
     """
     try:
+        # Ensure no nan values are present
+        if any(pd.isna(v) for v in data.values()):
+            logger.warning(f"Data contains NaN values: {data}")
+            return False
+
         drop_percentage = ((data['opening_price'] - data['intraday_low']) / data['opening_price']) * 100
-        return drop_percentage >= 10
+        return drop_percentage >= 5  # Threshold set to 5%
     except Exception as e:
         logger.error(f"Error checking buy condition: {e}")
         return False
