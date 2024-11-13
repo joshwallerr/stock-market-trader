@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify, render_template
-from flask_mongoengine import MongoEngine
-import yfinance as yf
+from pymongo import MongoClient, DESCENDING
 from datetime import datetime, timedelta
 import pytz
+import yfinance as yf
 import pandas as pd
 import requests
 import logging
@@ -14,80 +14,48 @@ from functools import lru_cache
 load_dotenv()
 
 PASSWORD = os.getenv('PASSWORD')
+MONGODB_URI = os.getenv('MONGODB_URI')
 
 # Initialize Flask app
 app = Flask(__name__)
-
-# Configure MongoDB
-app.config['MONGODB_SETTINGS'] = {
-    'db': 'OKh5hxnPlLbMm2Yb',  # Database name
-    'host': os.getenv('MONGODB_URI')  # MongoDB connection string
-}
-
-# Initialize MongoEngine
-db = MongoEngine(app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database models using MongoEngine
-class Position(db.Document):
-    symbol = db.StringField(required=True, max_length=10)
-    buy_price = db.FloatField(required=True)
-    target_price = db.FloatField(required=True)
-    buy_date = db.DateTimeField(required=True)
-    is_open = db.BooleanField(default=True)
+# Initialize MongoDB client
+client = MongoClient(MONGODB_URI)
+db = client.trading_bot  # Database name
 
-    meta = {
-        'collection': 'positions'
-    }
+# Define collections
+positions_col = db.positions
+triggered_buys_col = db.triggered_buys
+trades_col = db.trades
 
-class TriggeredBuy(db.Document):
-    symbol = db.StringField(required=True, unique=True, max_length=10)
-    trigger_date = db.DateTimeField(required=True)
+# Ensure unique index on symbol in triggered_buys
+triggered_buys_col.create_index('symbol', unique=True)
 
-    meta = {
-        'collection': 'triggered_buys',
-        'indexes': [
-            {'fields': ['symbol'], 'unique': True}
-        ]
-    }
+# Indexes for trades collection
+trades_col.create_index([('timestamp', DESCENDING)])
 
-class Trade(db.Document):
-    symbol = db.StringField(required=True, max_length=10)
-    action = db.StringField(required=True, choices=['BUY', 'SELL'])
-    price = db.FloatField(required=True)
-    timestamp = db.DateTimeField(required=True, default=datetime.utcnow)
 
-    meta = {
-        'collection': 'trades'
-    }
-
-# Create database tables (collections)
-with app.app_context():
-    db.create_collection(Position)
-    db.create_collection(TriggeredBuy)
-    db.create_collection(Trade)
-
-# Dashboard route
 @app.route('/dashboard')
 def dashboard():
     # Fetch trade history
-    trades = Trade.objects.order_by('-timestamp')
+    trades = list(trades_col.find().sort('timestamp', DESCENDING))
 
     # Fetch open positions
-    open_positions = Position.objects(is_open=True)
+    open_positions = list(positions_col.find({'is_open': True}))
 
     # Calculate average rates of return
     avg_returns = calculate_average_returns()
 
     return render_template('dashboard.html', trades=trades, open_positions=open_positions, avg_returns=avg_returns)
 
-# API endpoint for trade data
+
 @app.route('/api/trades')
 def api_trades():
-    trades = Trade.objects.order_by('timestamp')
+    trades = list(trades_col.find().sort('timestamp', 1))
     trade_data = {
         'trades': [],
         'timestamps': [],
@@ -102,14 +70,14 @@ def api_trades():
 
     for trade in trades:
         trade_data['trades'].append({
-            'action': trade.action,
-            'symbol': trade.symbol,
-            'price': trade.price,
-            'timestamp': trade.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            'action': trade['action'],
+            'symbol': trade['symbol'],
+            'price': trade['price'],
+            'timestamp': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
         })
 
         # Aggregate buy and sell volumes over time (e.g., per day)
-        timestamp = trade.timestamp.strftime('%Y-%m-%d')
+        timestamp = trade['timestamp'].strftime('%Y-%m-%d')
         if timestamp not in trade_data['timestamps']:
             trade_data['timestamps'].append(timestamp)
             trade_data['buyVolumes'].append(0)
@@ -118,19 +86,19 @@ def api_trades():
 
         index = trade_data['timestamps'].index(timestamp)
 
-        if trade.action == 'BUY':
+        if trade['action'] == 'BUY':
             trade_data['buyVolumes'][index] += 1
-            open_buys[trade.symbol] = trade.price
-        elif trade.action == 'SELL' and trade.symbol in open_buys:
-            buy_price = open_buys.pop(trade.symbol)
-            profit += (trade.price - buy_price)
+            open_buys[trade['symbol']] = trade['price']
+        elif trade['action'] == 'SELL' and trade['symbol'] in open_buys:
+            buy_price = open_buys.pop(trade['symbol'])
+            profit += (trade['price'] - buy_price)
             trade_data['sellVolumes'][index] += 1
 
         trade_data['profitLoss'][index] = profit
 
     return jsonify(trade_data)
 
-# Endpoint to run trades
+
 @app.route('/run-trades', methods=['POST'])
 def run_trades():
     data = request.get_json()
@@ -145,6 +113,7 @@ def run_trades():
     except Exception as e:
         logger.error(f"Error executing trading logic: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 def fetch_multiple_stock_data(symbols):
     try:
@@ -179,6 +148,7 @@ def fetch_multiple_stock_data(symbols):
         logger.error(f"Error fetching multiple stock data: {e}")
         return {}
 
+
 def is_market_open():
     """
     Checks if the US stock market is currently open.
@@ -194,9 +164,11 @@ def is_market_open():
 
     return market_open <= now <= market_close
 
+
 @lru_cache(maxsize=1)
 def get_sp500_symbols_cached():
     return get_sp500_symbols()
+
 
 def run_trading_logic():
     if not is_market_open():
@@ -213,65 +185,95 @@ def run_trading_logic():
 
     # Check for new buy opportunities
     for symbol in sp500_symbols:
-        if (TriggeredBuy.objects(symbol=symbol).first() or
-            Position.objects(symbol=symbol, is_open=True).first()):
+        # Check if there's a triggered buy or an open position
+        if (triggered_buys_col.find_one({'symbol': symbol}) or
+            positions_col.find_one({'symbol': symbol, 'is_open': True})):
             continue
 
         data = stock_data.get(symbol)
         if data and check_buy_condition(data):
             # Record triggered buy condition
-            new_trigger = TriggeredBuy(
-                symbol=symbol,
-                trigger_date=datetime.utcnow()
-            )
-            new_trigger.save()
+            new_trigger = {
+                'symbol': symbol,
+                'trigger_date': datetime.utcnow()
+            }
+            try:
+                triggered_buys_col.insert_one(new_trigger)
+            except Exception as e:
+                logger.error(f"Error inserting TriggeredBuy for {symbol}: {e}")
+                continue
 
             # Open a new position
             buy_price = data['current_price']
             target_price = buy_price * 1.005  # Target 0.5% increase
-            new_position = Position(
-                symbol=symbol,
-                buy_price=buy_price,
-                target_price=target_price,
-                buy_date=datetime.utcnow()
-            )
-            new_position.save()
+            new_position = {
+                'symbol': symbol,
+                'buy_price': buy_price,
+                'target_price': target_price,
+                'buy_date': datetime.utcnow(),
+                'is_open': True
+            }
+            try:
+                positions_col.insert_one(new_position)
+            except Exception as e:
+                logger.error(f"Error inserting Position for {symbol}: {e}")
+                continue
 
             # Log the buy trade
-            buy_trade = Trade(
-                symbol=symbol,
-                action='BUY',
-                price=buy_price,
-                timestamp=datetime.utcnow()
-            )
-            buy_trade.save()
+            buy_trade = {
+                'symbol': symbol,
+                'action': 'BUY',
+                'price': buy_price,
+                'timestamp': datetime.utcnow()
+            }
+            try:
+                trades_col.insert_one(buy_trade)
+            except Exception as e:
+                logger.error(f"Error logging BUY trade for {symbol}: {e}")
+                continue
 
             logger.info(f"Bought {symbol} at {buy_price:.2f}, target {target_price:.2f}")
 
     # Check for sell opportunities
-    open_positions = Position.objects(is_open=True)
-    symbols_to_fetch = [position.symbol for position in open_positions]
+    open_positions = list(positions_col.find({'is_open': True}))
+    symbols_to_fetch = [position['symbol'] for position in open_positions]
     sell_data = fetch_multiple_stock_data(symbols_to_fetch)
 
     for position in open_positions:
-        data = sell_data.get(position.symbol)
-        if data and data['current_price'] >= position.target_price:
+        symbol = position['symbol']
+        data = sell_data.get(symbol)
+        if data and data['current_price'] >= position['target_price']:
             # Close the position
-            position.update(set__is_open=False)
-            logger.info(f"Sold {position.symbol} at {data['current_price']:.2f}")
+            try:
+                positions_col.update_one(
+                    {'_id': position['_id']},
+                    {'$set': {'is_open': False}}
+                )
+            except Exception as e:
+                logger.error(f"Error closing Position for {symbol}: {e}")
+                continue
+
+            logger.info(f"Sold {symbol} at {data['current_price']:.2f}")
 
             # Log the sell trade
-            sell_trade = Trade(
-                symbol=position.symbol,
-                action='SELL',
-                price=data['current_price'],
-                timestamp=datetime.utcnow()
-            )
-            sell_trade.save()
+            sell_trade = {
+                'symbol': symbol,
+                'action': 'SELL',
+                'price': data['current_price'],
+                'timestamp': datetime.utcnow()
+            }
+            try:
+                trades_col.insert_one(sell_trade)
+            except Exception as e:
+                logger.error(f"Error logging SELL trade for {symbol}: {e}")
+                continue
 
             # Remove from triggered buys
-            TriggeredBuy.objects(symbol=position.symbol).delete()
-            logger.info(f"Removed TriggeredBuy for {position.symbol}")
+            try:
+                triggered_buys_col.delete_one({'symbol': symbol})
+            except Exception as e:
+                logger.error(f"Error deleting TriggeredBuy for {symbol}: {e}")
+                continue
 
 def check_buy_condition(data):
     """
