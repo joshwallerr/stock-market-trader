@@ -206,7 +206,7 @@ def fetch_multiple_stock_data(symbols, retries=3, delay=5):
             
             # Check for nan values
             if pd.isna(current_price) or pd.isna(opening_price) or pd.isna(intraday_low):
-                logger.warning(f"Incomplete data for {symbol}. Data: Current Price={current_price}, Opening Price={opening_price}, Intraday Low={intraday_low}")
+                logger.warning(f"Incomplete data for {symbol}. Data: Current Price=${current_price}, Opening Price=${opening_price}, Intraday Low=${intraday_low}")
                 continue
 
             stock_data[symbol] = {
