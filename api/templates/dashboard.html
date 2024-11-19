@@ -96,16 +96,15 @@
                     <td>{{ '%.2f'|format(position.buy_price) }}</td>
                     <td>{{ '%.2f'|format(position.target_price) }}</td>
                     <td>
-                        {% set current_price = fetch_current_price(position.symbol) %}
-                        {% if current_price %}
-                            {{ '%.2f'|format(current_price) }}
+                        {% if position.current_price %}
+                            {{ '%.2f'|format(position.current_price) }}
                         {% else %}
                             N/A
                         {% endif %}
                     </td>
                     <td>
-                        {% if current_price %}
-                            {{ '%.2f'|format(current_price * position.shares) }}
+                        {% if position.current_price %}
+                            {{ '%.2f'|format(position.current_price * position.shares) }}
                         {% else %}
                             N/A
                         {% endif %}

@@ -86,6 +86,7 @@ def dashboard():
         symbol = position['symbol']
         shares = position.get('shares', 0.0)
         current_price = fetch_current_price(symbol)
+        position['current_price'] = current_price  # Attach current_price to position
         if current_price is not None:
             position_value = shares * current_price
             portfolio_value += position_value
@@ -178,42 +179,32 @@ def fetch_multiple_stock_data(symbols, retries=3, delay=5):
         start_date = now - timedelta(days=1)
         end_date = now
 
-        # Fetch data for all symbols at once
-        stocks = yf.download(
-            tickers=' '.join(symbols), 
-            interval='1m', 
-            start=start_date, 
-            end=end_date, 
-            group_by='ticker',
-            threads=True,  # Enable multi-threading for faster downloads
-            progress=False  # Disable progress bar for cleaner logs
-        )
-
         stock_data = {}
         for symbol in symbols:
-            # Check if the symbol exists in the fetched data
-            if symbol not in stocks.columns.levels[0]:
-                logger.warning(f"No data for {symbol}")
-                continue
-            hist = stocks[symbol]
-            if hist.empty:
-                logger.warning(f"No data for {symbol}")
-                continue
-            # Use .iloc for positional indexing to avoid FutureWarning
-            current_price = hist['Close'].iloc[-1]
-            opening_price = hist['Open'].iloc[0]
-            intraday_low = hist['Low'].min()
-            
-            # Check for nan values
-            if pd.isna(current_price) or pd.isna(opening_price) or pd.isna(intraday_low):
-                logger.warning(f"Incomplete data for {symbol}. Data: Current Price=${current_price}, Opening Price=${opening_price}, Intraday Low=${intraday_low}")
+            try:
+                ticker = yf.Ticker(symbol)
+                data = ticker.history(period='1d', interval='1m')  # Corrected parameters
+                if not data.empty:
+                    current_price = data['Close'].iloc[-1]
+                    opening_price = data['Open'].iloc[0]
+                    intraday_low = data['Low'].min()
+                    
+                    # Check for nan values
+                    if pd.isna(current_price) or pd.isna(opening_price) or pd.isna(intraday_low):
+                        logger.warning(f"Incomplete data for {symbol}. Data: Current Price=${current_price}, Opening Price=${opening_price}, Intraday Low=${intraday_low}")
+                        continue
+
+                    stock_data[symbol] = {
+                        'current_price': current_price,
+                        'opening_price': opening_price,
+                        'intraday_low': intraday_low
+                    }
+                else:
+                    logger.warning(f"No data fetched for {symbol}.")
+            except Exception as e:
+                logger.error(f"Error fetching data for {symbol}: {e}")
                 continue
 
-            stock_data[symbol] = {
-                'current_price': current_price,
-                'opening_price': opening_price,
-                'intraday_low': intraday_low
-            }
         return stock_data
     except Exception as e:
         logger.error(f"Error fetching multiple stock data: {e}")
@@ -457,7 +448,7 @@ def fetch_current_price(symbol):
     """
     try:
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period='1m')
+        data = ticker.history(period='1d', interval='1m')  # Corrected parameters
         if not data.empty:
             current_price = data['Close'].iloc[-1]
             return current_price
