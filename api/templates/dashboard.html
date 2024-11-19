@@ -22,6 +22,18 @@
 <div class="container">
     <h1 class="mb-4">Trading Bot Dashboard</h1>
 
+    <!-- Portfolio Overview -->
+    <div class="mb-4">
+        <h3>Portfolio Overview</h3>
+        <ul>
+            <li><strong>Starting Cash:</strong> ${{ '%.2f'|format(starting_cash) }}</li>
+            <li><strong>Current Cash:</strong> ${{ '%.2f'|format(current_cash) }}</li>
+            <li><strong>Total Invested:</strong> ${{ '%.2f'|format(total_invested) }}</li>
+            <li><strong>Portfolio Value:</strong> ${{ '%.2f'|format(portfolio_value) }}</li>
+            <li><strong>Profit/Loss:</strong> ${{ '%.2f'|format(profit_loss) }} {% if profit_loss >= 0 %} <span class="text-success">(Profit)</span> {% else %} <span class="text-danger">(Loss)</span> {% endif %}</li>
+        </ul>
+    </div>
+
     <!-- Trade History -->
     <div class="mb-4">
         <h3>Trade History</h3>
@@ -33,6 +45,8 @@
                     <th>Action</th>
                     <th>Symbol</th>
                     <th>Price ($)</th>
+                    <th>Shares</th>
+                    <th>Total ($)</th>
                 </tr>
             </thead>
             <tbody>
@@ -42,6 +56,14 @@
                     <td>{{ trade.action }}</td>
                     <td>{{ trade.symbol }}</td>
                     <td>{{ '%.2f'|format(trade.price) }}</td>
+                    <td>{{ '%.4f'|format(trade.shares) }}</td>
+                    <td>
+                        {% if trade.action == 'BUY' %}
+                            - ${{ '%.2f'|format(trade.price * trade.shares) }}
+                        {% elif trade.action == 'SELL' %}
+                            + ${{ '%.2f'|format(trade.price * trade.shares) }}
+                        {% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -59,18 +81,35 @@
             <thead>
                 <tr>
                     <th>Symbol</th>
+                    <th>Shares</th>
                     <th>Buy Price ($)</th>
                     <th>Target Price ($)</th>
-                    <th>Buy Date</th>
+                    <th>Current Price ($)</th>
+                    <th>Current Value ($)</th>
                 </tr>
             </thead>
             <tbody>
                 {% for position in open_positions %}
                 <tr>
                     <td>{{ position.symbol }}</td>
+                    <td>{{ '%.4f'|format(position.shares) }}</td>
                     <td>{{ '%.2f'|format(position.buy_price) }}</td>
                     <td>{{ '%.2f'|format(position.target_price) }}</td>
-                    <td>{{ position.buy_date.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>
+                        {% set current_price = fetch_current_price(position.symbol) %}
+                        {% if current_price %}
+                            {{ '%.2f'|format(current_price) }}
+                        {% else %}
+                            N/A
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if current_price %}
+                            {{ '%.2f'|format(current_price * position.shares) }}
+                        {% else %}
+                            N/A
+                        {% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

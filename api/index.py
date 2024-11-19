@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify, render_template
 from pymongo import MongoClient, DESCENDING
-import yfinance as yf
 from datetime import datetime, timedelta
 import pytz
+import yfinance as yf
 import pandas as pd
 import requests
 import logging
@@ -11,7 +11,6 @@ import os
 from functools import lru_cache
 from io import StringIO
 import time
-
 
 # Load environment variables
 load_dotenv()
@@ -34,6 +33,7 @@ db = client.trading_bot  # Database name
 positions_col = db.positions
 triggered_buys_col = db.triggered_buys
 trades_col = db.trades
+portfolio_col = db.portfolio  # New collection for portfolio
 
 # Ensure unique index on symbol in triggered_buys
 triggered_buys_col.create_index('symbol', unique=True)
@@ -41,6 +41,22 @@ triggered_buys_col.create_index('symbol', unique=True)
 # Indexes for trades collection
 trades_col.create_index([('timestamp', DESCENDING)])
 
+# Initialize portfolio
+def initialize_portfolio():
+    portfolio = portfolio_col.find_one({'_id': 'portfolio'})
+    if not portfolio:
+        portfolio = {
+            '_id': 'portfolio',
+            'starting_cash': 250.0,  # Starting cash value
+            'current_cash': 250.0,    # Current cash balance
+            'created_at': datetime.utcnow()
+        }
+        portfolio_col.insert_one(portfolio)
+        logger.info("Initialized portfolio with $250 starting cash.")
+    else:
+        logger.info("Portfolio already initialized.")
+
+initialize_portfolio()
 
 @app.route('/dashboard')
 def dashboard():
@@ -50,10 +66,45 @@ def dashboard():
     # Fetch open positions
     open_positions = list(positions_col.find({'is_open': True}))
 
+    # Fetch portfolio data
+    portfolio = portfolio_col.find_one({'_id': 'portfolio'})
+    if portfolio:
+        starting_cash = portfolio.get('starting_cash', 0.0)
+        current_cash = portfolio.get('current_cash', 0.0)
+    else:
+        starting_cash = 0.0
+        current_cash = 0.0
+
     # Calculate average rates of return
     avg_returns = calculate_average_returns()
 
-    return render_template('dashboard.html', trades=trades, open_positions=open_positions, avg_returns=avg_returns)
+    # Calculate total portfolio value
+    total_invested = 0.0
+    portfolio_value = current_cash
+
+    for position in open_positions:
+        symbol = position['symbol']
+        shares = position.get('shares', 0.0)
+        current_price = fetch_current_price(symbol)
+        if current_price is not None:
+            position_value = shares * current_price
+            portfolio_value += position_value
+            total_invested += shares * position['buy_price']
+
+    # Calculate profit/loss
+    profit_loss = portfolio_value - starting_cash
+
+    return render_template(
+        'dashboard.html', 
+        trades=trades, 
+        open_positions=open_positions, 
+        avg_returns=avg_returns,
+        starting_cash=starting_cash,
+        current_cash=current_cash,
+        total_invested=total_invested,
+        portfolio_value=round(portfolio_value, 2),
+        profit_loss=round(profit_loss, 2)
+    )
 
 @app.route('/api/trades')
 def api_trades():
@@ -75,6 +126,7 @@ def api_trades():
             'action': trade['action'],
             'symbol': trade['symbol'],
             'price': trade['price'],
+            'shares': trade['shares'],
             'timestamp': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
         })
 
@@ -100,7 +152,6 @@ def api_trades():
 
     return jsonify(trade_data)
 
-
 @app.route('/run-trades', methods=['POST'])
 def run_trades():
     data = request.get_json()
@@ -115,8 +166,8 @@ def run_trades():
     except Exception as e:
         logger.error(f"Error executing trading logic: {e}")
         return jsonify({'error': str(e)}), 500
-    
-def fetch_multiple_stock_data(symbols):
+
+def fetch_multiple_stock_data(symbols, retries=3, delay=5):
     if not symbols:
         logger.warning("No symbols provided to fetch_multiple_stock_data.")
         return {}
@@ -206,6 +257,14 @@ def run_trading_logic():
     # Fetch all stock data at once
     stock_data = fetch_multiple_stock_data(sp500_symbols)
 
+    # Fetch portfolio data
+    portfolio = portfolio_col.find_one({'_id': 'portfolio'})
+    if not portfolio:
+        logger.error("Portfolio not initialized. Aborting trading logic.")
+        return
+
+    current_cash = portfolio.get('current_cash', 0.0)
+
     # Check for new buy opportunities
     for symbol in sp500_symbols:
         # Check if there's a triggered buy or an open position
@@ -215,6 +274,11 @@ def run_trading_logic():
 
         data = stock_data.get(symbol)
         if data and check_buy_condition(data):
+            # Check if there's enough cash to buy ($5)
+            if current_cash < 5.0:
+                logger.warning(f"Not enough cash to buy {symbol}. Current cash: ${current_cash}")
+                continue
+
             # Record triggered buy condition
             new_trigger = {
                 'symbol': symbol,
@@ -234,15 +298,21 @@ def run_trading_logic():
                 logger.warning(f"Invalid buy_price or target_price for {symbol}. Skipping trade.")
                 continue
 
+            shares = 5.0 / buy_price  # $5 investment
+
             new_position = {
                 'symbol': symbol,
                 'buy_price': buy_price,
                 'target_price': target_price,
                 'buy_date': datetime.utcnow(),
-                'is_open': True
+                'is_open': True,
+                'shares': shares
             }
             try:
                 positions_col.insert_one(new_position)
+                # Deduct $5 from current_cash
+                portfolio_col.update_one({'_id': 'portfolio'}, {'$inc': {'current_cash': -5.0}})
+                current_cash -= 5.0
             except Exception as e:
                 logger.error(f"Error inserting Position for {symbol}: {e}")
                 continue
@@ -252,6 +322,7 @@ def run_trading_logic():
                 'symbol': symbol,
                 'action': 'BUY',
                 'price': buy_price,
+                'shares': shares,
                 'timestamp': datetime.utcnow()
             }
             try:
@@ -263,7 +334,7 @@ def run_trading_logic():
                 logger.error(f"Error logging BUY trade for {symbol}: {e}")
                 continue
 
-            logger.info(f"Bought {symbol} at {buy_price:.2f}, target {target_price:.2f}")
+            logger.info(f"Bought {symbol} at ${buy_price:.2f}, target ${target_price:.2f}, shares: {shares:.4f}")
 
     # Check for sell opportunities
     open_positions = list(positions_col.find({'is_open': True}))
@@ -277,25 +348,31 @@ def run_trading_logic():
 
     for position in open_positions:
         symbol = position['symbol']
+        shares = position.get('shares', 0.0)
         data = sell_data.get(symbol)
         if data and data['current_price'] >= position['target_price']:
             # Close the position
+            proceeds = data['current_price'] * shares
+
             try:
                 positions_col.update_one(
                     {'_id': position['_id']},
                     {'$set': {'is_open': False}}
                 )
+                # Add proceeds to current_cash
+                portfolio_col.update_one({'_id': 'portfolio'}, {'$inc': {'current_cash': proceeds}})
             except Exception as e:
                 logger.error(f"Error closing Position for {symbol}: {e}")
                 continue
 
-            logger.info(f"Sold {symbol} at {data['current_price']:.2f}")
+            logger.info(f"Sold {symbol} at ${data['current_price']:.2f}, shares: {shares:.4f}, proceeds: ${proceeds:.2f}")
 
             # Log the sell trade
             sell_trade = {
                 'symbol': symbol,
                 'action': 'SELL',
                 'price': data['current_price'],
+                'shares': shares,
                 'timestamp': datetime.utcnow()
             }
             try:
@@ -313,13 +390,6 @@ def run_trading_logic():
             except Exception as e:
                 logger.error(f"Error deleting TriggeredBuy for {symbol}: {e}")
                 continue
-
-def validate_trade_data(trade):
-    required_fields = ['symbol', 'action', 'price', 'timestamp']
-    for field in required_fields:
-        if field not in trade or pd.isna(trade[field]):
-            return False
-    return True
 
 def check_buy_condition(data):
     """
@@ -375,6 +445,29 @@ def get_sp500_symbols():
         logger.error(f"Error fetching S&P 500 symbols: {e}")
         return []
 
+def fetch_current_price(symbol):
+    """
+    Fetches the current price for a given symbol.
+
+    Args:
+        symbol (str): The stock ticker symbol.
+
+    Returns:
+        float or None: Current price if fetched successfully, else None.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period='1m')
+        if not data.empty:
+            current_price = data['Close'].iloc[-1]
+            return current_price
+        else:
+            logger.warning(f"No current price data available for {symbol}.")
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching current price for {symbol}: {e}")
+        return None
+
 def calculate_average_returns():
     avg_returns = {}
     now = datetime.utcnow()
@@ -410,6 +503,23 @@ def calculate_average_returns():
         avg_returns[period_name] = round(avg, 2)
 
     return avg_returns
+
+def validate_trade_data(trade):
+    """
+    Validates trade data to ensure all required fields are present and valid.
+
+    Args:
+        trade (dict): The trade data dictionary.
+
+    Returns:
+        bool: True if valid, False otherwise.
+    """
+    required_fields = ['symbol', 'action', 'price', 'shares', 'timestamp']
+    for field in required_fields:
+        if field not in trade or pd.isna(trade[field]):
+            logger.warning(f"Trade data missing or invalid for field '{field}': {trade}")
+            return False
+    return True
 
 if __name__ == '__main__':
     app.run(debug=True)
