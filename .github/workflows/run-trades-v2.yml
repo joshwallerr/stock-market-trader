@@ -1,0 +1,17 @@
+name: Run Trades v2
+
+on:
+  schedule:
+     - cron: '*/7 * * * *'
+
+jobs:
+  run-scout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send POST request
+        uses: fjogeleit/http-request-action@master
+        with:
+          url: 'https://v2-stock-market-trader.vercel.app/run-trades'
+          method: 'POST'
+          contentType: 'application/json'
+          data: '{"password": "${{ secrets.TRADES_PASSWORD }}"}'
