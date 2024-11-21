@@ -47,6 +47,7 @@
                     <th>Price ($)</th>
                     <th>Shares</th>
                     <th>Total ($)</th>
+                    <th>Condition</th> <!-- New Column -->
                 </tr>
             </thead>
             <tbody>
@@ -62,6 +63,13 @@
                             - ${{ '%.2f'|format(trade.price * trade.shares) }}
                         {% elif trade.action == 'SELL' %}
                             + ${{ '%.2f'|format(trade.price * trade.shares) }}
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if trade.condition_type %}
+                            {{ trade.condition_type|capitalize }}
+                        {% else %}
+                            N/A
                         {% endif %}
                     </td>
                 </tr>
@@ -86,6 +94,7 @@
                     <th>Target Price ($)</th>
                     <th>Current Price ($)</th>
                     <th>Current Value ($)</th>
+                    <th>Condition</th> <!-- New Column -->
                 </tr>
             </thead>
             <tbody>
@@ -105,6 +114,13 @@
                     <td>
                         {% if position.current_price %}
                             {{ '%.2f'|format(position.current_price * position.shares) }}
+                        {% else %}
+                            N/A
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if position.condition_type %}
+                            {{ position.condition_type|capitalize }}
                         {% else %}
                             N/A
                         {% endif %}

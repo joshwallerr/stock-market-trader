@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize MongoDB client
 client = MongoClient(MONGODB_URI)
-db = client.trading_bot  # Database name
+db = client.trading_bot_testing  # Database name
 
 # Define collections
 positions_col = db.positions
@@ -176,31 +176,55 @@ def fetch_multiple_stock_data(symbols, retries=3, delay=5):
     try:
         tz = pytz.timezone('US/Eastern')
         now = datetime.now(tz)
-        start_date = now - timedelta(days=1)
-        end_date = now
+        start_date = (now - timedelta(days=2)).strftime('%Y-%m-%d')
+        end_date = now.strftime('%Y-%m-%d')
 
         stock_data = {}
         for symbol in symbols:
             try:
                 ticker = yf.Ticker(symbol)
-                data = ticker.history(period='1d', interval='1m')  # Corrected parameters
-                if not data.empty:
-                    current_price = data['Close'].iloc[-1]
-                    opening_price = data['Open'].iloc[0]
-                    intraday_low = data['Low'].min()
-                    
-                    # Check for nan values
-                    if pd.isna(current_price) or pd.isna(opening_price) or pd.isna(intraday_low):
-                        logger.warning(f"Incomplete data for {symbol}. Data: Current Price=${current_price}, Opening Price=${opening_price}, Intraday Low=${intraday_low}")
-                        continue
-
-                    stock_data[symbol] = {
-                        'current_price': current_price,
-                        'opening_price': opening_price,
-                        'intraday_low': intraday_low
-                    }
-                else:
+                data = ticker.history(start=start_date, end=end_date, interval='1m')
+                if data.empty:
                     logger.warning(f"No data fetched for {symbol}.")
+                    continue
+
+                # Reset index to access datetime
+                data = data.reset_index()
+
+                # Ensure at least two days of data
+                data['Date'] = data['Datetime'].dt.date
+                grouped = data.groupby('Date')
+                if len(grouped) < 2:
+                    logger.warning(f"Not enough days of data for {symbol}.")
+                    continue
+
+                days = sorted(grouped.groups.keys())
+                previous_day = days[-2]
+                current_day = days[-1]
+
+                previous_day_data = grouped.get_group(previous_day)
+                current_day_data = grouped.get_group(current_day)
+
+                previous_close = previous_day_data['Close'].iloc[-1]
+                opening_price = current_day_data['Open'].iloc[0]
+                intraday_low = current_day_data['Low'].min()
+                current_price = current_day_data['Close'].iloc[-1]
+
+                # Check for NaN values
+                if pd.isna(current_price) or pd.isna(opening_price) or pd.isna(intraday_low) or pd.isna(previous_close):
+                    logger.warning(
+                        f"Incomplete data for {symbol}. Data: Current Price=${current_price}, "
+                        f"Opening Price=${opening_price}, Intraday Low=${intraday_low}, "
+                        f"Previous Close=${previous_close}"
+                    )
+                    continue
+
+                stock_data[symbol] = {
+                    'current_price': current_price,
+                    'opening_price': opening_price,
+                    'intraday_low': intraday_low,
+                    'previous_close': previous_close
+                }
             except Exception as e:
                 logger.error(f"Error fetching data for {symbol}: {e}")
                 continue
@@ -264,68 +288,84 @@ def run_trading_logic():
             continue
 
         data = stock_data.get(symbol)
-        if data and check_buy_condition(data):
-            # Check if there's enough cash to buy ($5)
-            if current_cash < 5.0:
-                logger.warning(f"Not enough cash to buy {symbol}. Current cash: ${current_cash}")
-                continue
+        if not data:
+            continue
 
-            # Record triggered buy condition
-            new_trigger = {
-                'symbol': symbol,
-                'trigger_date': datetime.utcnow()
-            }
-            try:
-                triggered_buys_col.insert_one(new_trigger)
-            except Exception as e:
-                logger.error(f"Error inserting TriggeredBuy for {symbol}: {e}")
-                continue
+        condition_type = get_buy_condition_type(data)
+        if not condition_type:
+            continue  # No condition met
 
-            # Open a new position
-            buy_price = data['current_price']
-            target_price = buy_price * 1.005  # Target 0.5% increase
+        # Determine target price based on condition type
+        if condition_type == 'drop':
+            target_price = data['current_price'] * 1.005  # 0.5% increase
+            buy_amount = 5.0  # $5 investment
+        elif condition_type == 'gap_up':
+            target_price = data['current_price'] * 1.05   # 5% increase
+            buy_amount = 5.0  # $5 investment
+        else:
+            logger.warning(f"Unknown condition type for {symbol}: {condition_type}")
+            continue
 
-            if pd.isna(buy_price) or pd.isna(target_price):
-                logger.warning(f"Invalid buy_price or target_price for {symbol}. Skipping trade.")
-                continue
+        # Check if there's enough cash to buy
+        if current_cash < buy_amount:
+            logger.warning(f"Not enough cash to buy {symbol}. Current cash: ${current_cash}")
+            continue
 
-            shares = 5.0 / buy_price  # $5 investment
+        # Record triggered buy condition
+        new_trigger = {
+            'symbol': symbol,
+            'trigger_date': datetime.utcnow(),
+            'condition_type': condition_type
+        }
+        try:
+            triggered_buys_col.insert_one(new_trigger)
+        except Exception as e:
+            logger.error(f"Error inserting TriggeredBuy for {symbol}: {e}")
+            continue
 
-            new_position = {
-                'symbol': symbol,
-                'buy_price': buy_price,
-                'target_price': target_price,
-                'buy_date': datetime.utcnow(),
-                'is_open': True,
-                'shares': shares
-            }
-            try:
-                positions_col.insert_one(new_position)
-                # Deduct $5 from current_cash
-                portfolio_col.update_one({'_id': 'portfolio'}, {'$inc': {'current_cash': -5.0}})
-                current_cash -= 5.0
-            except Exception as e:
-                logger.error(f"Error inserting Position for {symbol}: {e}")
-                continue
+        # Open a new position
+        buy_price = data['current_price']
+        # target_price already determined
 
-            # Log the buy trade
-            buy_trade = {
-                'symbol': symbol,
-                'action': 'BUY',
-                'price': buy_price,
-                'shares': shares,
-                'timestamp': datetime.utcnow()
-            }
-            try:
-                if validate_trade_data(buy_trade):
-                    trades_col.insert_one(buy_trade)
-                else:
-                    logger.warning(f"Invalid trade data: {buy_trade}")
-            except Exception as e:
-                logger.error(f"Error logging BUY trade for {symbol}: {e}")
-                continue
+        shares = buy_amount / buy_price  # Calculate number of shares
 
-            logger.info(f"Bought {symbol} at ${buy_price:.2f}, target ${target_price:.2f}, shares: {shares:.4f}")
+        new_position = {
+            'symbol': symbol,
+            'buy_price': buy_price,
+            'target_price': target_price,
+            'buy_date': datetime.utcnow(),
+            'is_open': True,
+            'shares': shares,
+            'condition_type': condition_type  # Store condition type
+        }
+        try:
+            positions_col.insert_one(new_position)
+            # Deduct buy_amount from current_cash
+            portfolio_col.update_one({'_id': 'portfolio'}, {'$inc': {'current_cash': -buy_amount}})
+            current_cash -= buy_amount
+        except Exception as e:
+            logger.error(f"Error inserting Position for {symbol}: {e}")
+            continue
+
+        # Log the buy trade
+        buy_trade = {
+            'symbol': symbol,
+            'action': 'BUY',
+            'price': buy_price,
+            'shares': shares,
+            'timestamp': datetime.utcnow(),
+            'condition_type': condition_type  # Optional: log condition type
+        }
+        try:
+            if validate_trade_data(buy_trade):
+                trades_col.insert_one(buy_trade)
+            else:
+                logger.warning(f"Invalid trade data: {buy_trade}")
+        except Exception as e:
+            logger.error(f"Error logging BUY trade for {symbol}: {e}")
+            continue
+
+        logger.info(f"Bought {symbol} at ${buy_price:.2f}, target ${target_price:.2f}, shares: {shares:.4f}, condition: {condition_type}")
 
     # Check for sell opportunities
     open_positions = list(positions_col.find({'is_open': True}))
@@ -364,7 +404,8 @@ def run_trading_logic():
                 'action': 'SELL',
                 'price': data['current_price'],
                 'shares': shares,
-                'timestamp': datetime.utcnow()
+                'timestamp': datetime.utcnow(),
+                'condition_type': position.get('condition_type', 'unknown')  # Optional: log condition type
             }
             try:
                 if validate_trade_data(sell_trade):
@@ -382,32 +423,40 @@ def run_trading_logic():
                 logger.error(f"Error deleting TriggeredBuy for {symbol}: {e}")
                 continue
 
-def check_buy_condition(data):
+def get_buy_condition_type(data, drop_threshold=10, gap_threshold=5):
     """
-    Checks if the stock has decreased by more than 5% from opening to intraday low.
-    
+    Determines the buy condition type based on the stock data.
+
     Args:
-        data (dict): Dictionary containing 'opening_price' and 'intraday_low'.
-    
+        data (dict): Dictionary containing 'opening_price', 'intraday_low', 'previous_close'.
+        drop_threshold (float): Percentage drop threshold.
+        gap_threshold (float): Percentage gap up threshold.
+
     Returns:
-        bool: True if condition met, else False.
+        str or None: 'drop' or 'gap_up' if condition met, else None.
     """
     try:
-        # Ensure no nan values are present
-        if any(pd.isna(v) for v in data.values()):
-            logger.warning(f"Data contains NaN values: {data}")
-            return False
+        # Check for drop condition
+        if 'opening_price' in data and 'intraday_low' in data:
+            drop_percentage = ((data['opening_price'] - data['intraday_low']) / data['opening_price']) * 100
+            if drop_percentage >= drop_threshold:
+                return 'drop'
 
-        drop_percentage = ((data['opening_price'] - data['intraday_low']) / data['opening_price']) * 100
-        return drop_percentage >= 5  # Threshold set to 5%
+        # Check for gap up condition
+        if 'previous_close' in data and 'opening_price' in data:
+            gap_percentage = ((data['opening_price'] - data['previous_close']) / data['previous_close']) * 100
+            if gap_percentage >= gap_threshold:
+                return 'gap_up'
+
+        return None
     except Exception as e:
-        logger.error(f"Error checking buy condition: {e}")
-        return False
+        logger.error(f"Error determining buy condition type: {e}")
+        return None
 
 def get_sp500_symbols():
     """
     Fetches the current list of S&P 500 symbols from Wikipedia.
-    
+
     Returns:
         list: A list of ticker symbols.
     """
@@ -448,13 +497,12 @@ def fetch_current_price(symbol):
     """
     try:
         ticker = yf.Ticker(symbol)
-        data = ticker.history(period='1d', interval='1m')  # Corrected parameters
-        if not data.empty:
-            current_price = data['Close'].iloc[-1]
-            return current_price
-        else:
+        data = ticker.history(period='1d', interval='1m')
+        if data.empty:
             logger.warning(f"No current price data available for {symbol}.")
             return None
+        current_price = data['Close'].iloc[-1]
+        return current_price
     except Exception as e:
         logger.error(f"Error fetching current price for {symbol}: {e}")
         return None
