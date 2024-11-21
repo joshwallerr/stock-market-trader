@@ -423,7 +423,7 @@ def run_trading_logic():
                 logger.error(f"Error deleting TriggeredBuy for {symbol}: {e}")
                 continue
 
-def get_buy_condition_type(data, drop_threshold=10, gap_threshold=5):
+def get_buy_condition_type(data, drop_threshold=5, gap_threshold=5):
     """
     Determines the buy condition type based on the stock data.
 
