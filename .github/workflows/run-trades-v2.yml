@@ -1,4 +1,4 @@
-name: Run Trades
+name: Run Trades v2
 
 on:
   schedule:
