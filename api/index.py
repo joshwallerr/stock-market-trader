@@ -299,8 +299,8 @@ def run_trading_logic():
         if condition_type == 'drop':
             target_price = data['current_price'] * 1.005  # 0.5% increase
             buy_amount = 5.0  # $5 investment
-        elif condition_type == 'gap_up':
-            target_price = data['current_price'] * 1.05   # 5% increase
+        elif condition_type == 'gap_down':
+            target_price = data['current_price'] * 1.005   # Approximately 0.5% increase
             buy_amount = 5.0  # $5 investment
         else:
             logger.warning(f"Unknown condition type for {symbol}: {condition_type}")
@@ -430,10 +430,10 @@ def get_buy_condition_type(data, drop_threshold=5, gap_threshold=5):
     Args:
         data (dict): Dictionary containing 'opening_price', 'intraday_low', 'previous_close'.
         drop_threshold (float): Percentage drop threshold.
-        gap_threshold (float): Percentage gap up threshold.
+        gap_threshold (float): Percentage gap down threshold.
 
     Returns:
-        str or None: 'drop' or 'gap_up' if condition met, else None.
+        str or None: 'drop' or 'gap_down' if condition met, else None.
     """
     try:
         # Check for drop condition
@@ -442,11 +442,11 @@ def get_buy_condition_type(data, drop_threshold=5, gap_threshold=5):
             if drop_percentage >= drop_threshold:
                 return 'drop'
 
-        # Check for gap up condition
+        # Check for gap down condition
         if 'previous_close' in data and 'opening_price' in data:
             gap_percentage = ((data['opening_price'] - data['previous_close']) / data['previous_close']) * 100
-            if gap_percentage >= gap_threshold:
-                return 'gap_up'
+            if gap_percentage <= -gap_threshold:
+                return 'gap_down'
 
         return None
     except Exception as e:
