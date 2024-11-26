@@ -174,16 +174,13 @@ def fetch_multiple_stock_data(symbols, retries=3, delay=5):
         return {}
     
     try:
-        tz = pytz.timezone('US/Eastern')
-        now = datetime.now(tz)
-        start_date = (now - timedelta(days=2)).strftime('%Y-%m-%d')
-        end_date = now.strftime('%Y-%m-%d')
-
+        # For 1-minute data, use a valid 'period' parameter
         stock_data = {}
         for symbol in symbols:
             try:
                 ticker = yf.Ticker(symbol)
-                data = ticker.history(start=start_date, end=end_date, interval='1m')
+                # Use 'period' of '5d' to get up to 5 days of data
+                data = ticker.history(period='5d', interval='1m')
                 if data.empty:
                     logger.warning(f"No data fetched for {symbol}.")
                     continue
@@ -382,6 +379,7 @@ def run_trading_logic():
         shares = position.get('shares', 0.0)
         data = sell_data.get(symbol)
         if data and data['current_price'] >= position['target_price']:
+            print('selling position: ', symbol)
             # Close the position
             proceeds = data['current_price'] * shares
 
