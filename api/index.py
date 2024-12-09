@@ -58,6 +58,11 @@ def initialize_portfolio():
 
 initialize_portfolio()
 
+
+@app.route('/get-daily-profit')
+def get_daily_profit():
+    return jsonify({'profit': 4.20})
+
 @app.route('/dashboard')
 def dashboard():
     # Fetch trade history
